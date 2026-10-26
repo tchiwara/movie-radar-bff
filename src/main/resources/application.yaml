@@ -1,0 +1,42 @@
+spring:
+  application:
+    name: movie-radar-bff
+  config:
+    import: optional:file:.env[.properties]
+  cache:
+    type: caffeine
+  web:
+    resources:
+      add-mappings: false
+  mvc:
+    problemdetails:
+      enabled: false
+
+logging:
+  level:
+    root: INFO
+    dev.tchiwara.movieradar: ${LOG_LEVEL:INFO}
+    org.apache.catalina: WARN
+    org.springframework.web.servlet.DispatcherServlet: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [requestId=%X{requestId:-none}] %logger{36} - %msg%n"
+
+server:
+  # "none": the container does not rewrite the client address from X-Forwarded-For.
+  # ClientIpResolver is the only code that reads that header, and only when
+  # app.trusted-proxy-hops > 0.
+  forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:none}
+  port: ${PORT:8080}
+
+app:
+  tmdb-token: ${TMDB_TOKEN:}
+  allowed-origins: ${ALLOWED_ORIGINS:}
+  rate-limit-per-minute: ${RATE_LIMIT_PER_MINUTE:60}
+  cache-ttl-minutes: ${CACHE_TTL_MINUTES:10}
+  trusted-proxy-hops: ${TRUSTED_PROXY_HOPS:0}
+  appwrite:
+    endpoint: ${APPWRITE_ENDPOINT:}
+    project-id: ${APPWRITE_PROJECT_ID:}
+    database-id: ${APPWRITE_DATABASE_ID:}
+    table-id: ${APPWRITE_TABLE_ID:}
+    api-key: ${APPWRITE_API_KEY:}
