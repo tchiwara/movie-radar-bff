@@ -33,6 +33,8 @@ app:
   allowed-origins: ${ALLOWED_ORIGINS:}
   rate-limit-per-minute: ${RATE_LIMIT_PER_MINUTE:60}
   cache-ttl-minutes: ${CACHE_TTL_MINUTES:10}
+  connect-timeout-seconds: ${CONNECT_TIMEOUT_SECONDS:5}
+  read-timeout-seconds: ${READ_TIMEOUT_SECONDS:10}
   trusted-proxy-hops: ${TRUSTED_PROXY_HOPS:0}
   appwrite:
     endpoint: ${APPWRITE_ENDPOINT:}
