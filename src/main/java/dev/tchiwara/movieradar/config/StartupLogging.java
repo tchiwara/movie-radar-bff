@@ -14,6 +14,12 @@ public class StartupLogging {
     @Value("${server.forward-headers-strategy:framework}")
     private String forwardHeadersStrategy;
 
+    @Value("${app.connect-timeout-seconds:5}")
+    private long connectTimeoutSeconds;
+
+    @Value("${app.read-timeout-seconds:10}")
+    private long readTimeoutSeconds;
+
     public StartupLogging(AppProperties properties) {
         this.properties = properties;
     }
@@ -24,12 +30,12 @@ public class StartupLogging {
         log.info("configuration TMDB_TOKEN={} APPWRITE_ENDPOINT={} APPWRITE_PROJECT_ID={} " +
                         "APPWRITE_DATABASE_ID={} APPWRITE_TABLE_ID={} APPWRITE_API_KEY={} " +
                         "ALLOWED_ORIGINS={} rateLimitPerMinute={} cacheTtlMinutes={} " +
-                        "trustedProxyHops={} connectTimeoutSeconds=2 readTimeoutSeconds=5 forwardHeadersStrategy={}",
+                        "trustedProxyHops={} connectTimeoutSeconds={} readTimeoutSeconds={} forwardHeadersStrategy={}",
                 state(nonBlank(properties.tmdbToken())), state(a != null && nonBlank(a.endpoint())), state(a != null && nonBlank(a.projectId())),
                 state(a != null && nonBlank(a.databaseId())), state(a != null && nonBlank(a.tableId())),
                 state(a != null && nonBlank(a.apiKey())), state(!properties.origins().isEmpty()),
                 properties.rateLimitPerMinute(), properties.cacheTtlMinutes(), properties.trustedProxyHops(),
-                forwardHeadersStrategy);
+                connectTimeoutSeconds, readTimeoutSeconds, forwardHeadersStrategy);
         if (properties.tmdbToken() == null || properties.tmdbToken().isBlank()) {
             throw new IllegalStateException("TMDB_TOKEN is missing; configure the TMDB server credential before startup");
         }
