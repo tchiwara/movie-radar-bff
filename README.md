@@ -89,12 +89,13 @@ All configuration comes from environment variables. See `.env.example` for the n
 | `TRUSTED_PROXY_HOPS` | `0` | Trusted proxies in front of the app (see below) |
 | `PORT` | `8080` | HTTP port |
 | `LOG_LEVEL` | `INFO` | Log level for `dev.tchiwara.movieradar` |
+| `FORWARD_HEADERS_STRATEGY` | `none` | Spring forward-headers strategy; leave as `none` |
 
-Missing required settings fail startup immediately.
+Missing required settings fail startup immediately. Upstream timeouts are currently fixed at 2 s (connect) and 5 s (read).
 
 ## Run locally
 
-Set the environment variables above, then:
+Set the environment variables above, or copy `.env.example` to `.env` and fill it in (Spring imports `.env` from the working directory). Then:
 
 ```powershell
 .\mvnw.cmd spring-boot:run      # Windows
@@ -123,9 +124,7 @@ docker run --rm --name movie-radar-bff --env-file .env -p 8080:8080 movie-radar-
 ./mvnw test
 ```
 
-22 tests, all passing. They cover: application context startup, controller input validation, global error mapping (400 and 504), TMDB response mapping and timeouts, log redaction, search normalization, non-fatal search-term counting, rate limiting and `X-Forwarded-For` handling, and the Appwrite trending repository (row creation, count increments, error mapping, and the ordered-query fallback). There is no coverage report and no CI yet.
-
-Covers: context startup, controller validation, global error mapping, TMDB mapping/timeouts/redaction, search normalization, service cache and counting behavior, rate limiting, `X-Forwarded-For` handling, and Appwrite row creation, query encoding, error mapping and redaction. No coverage report is generated.
+22 tests, all passing, using dummy configuration from `src/test/resources`, so no `.env` or real credentials are needed. They cover: application context startup, controller input validation, global error mapping (400 and 504), TMDB response mapping and timeouts, log redaction, search normalization, non-fatal search-term counting, rate limiting and `X-Forwarded-For` handling, and the Appwrite trending repository (row creation, count increments, error mapping, and the ordered-query fallback). There is no coverage report and no CI yet.
 
 ## Caching and rate limiting
 
