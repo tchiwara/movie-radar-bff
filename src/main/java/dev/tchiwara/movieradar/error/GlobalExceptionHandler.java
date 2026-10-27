@@ -5,8 +5,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -30,6 +33,14 @@ public class GlobalExceptionHandler {
         return mapped(status, code, misconfigured ? "Upstream credentials are misconfigured" : e.getMessage(),
                 e, misconfigured);
     }
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    ResponseEntity<ApiError> notFound(Exception e) {
+        return quiet(404, "NOT_FOUND", "Resource not found");
+    }
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    ResponseEntity<ApiError> methodNotAllowed(HttpRequestMethodNotSupportedException e) {
+        return quiet(405, "METHOD_NOT_ALLOWED", "Method not allowed");
+    }
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> other(Exception e) {
         return mapped(500, "INTERNAL_ERROR", "An unexpected error occurred", e, false);
@@ -43,6 +54,11 @@ public class GlobalExceptionHandler {
             log.warn("mapped error requestId={} status={} code={}", requestId, status, code);
         }
         log.debug("mapped error stack requestId={} status={} code={}", requestId, status, code, exception);
+        return ResponseEntity.status(status).body(new ApiError(status, code, message));
+    }
+    private ResponseEntity<ApiError> quiet(int status, String code, String message) {
+        String requestId = MDC.get(dev.tchiwara.movieradar.config.RequestLoggingFilter.REQUEST_ID);
+        log.info("mapped error requestId={} status={} code={}", requestId, status, code);
         return ResponseEntity.status(status).body(new ApiError(status, code, message));
     }
     public record ApiError(int status, String code, String message) {}
