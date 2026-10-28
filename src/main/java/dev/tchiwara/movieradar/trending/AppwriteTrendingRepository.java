@@ -18,7 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @Repository
 public class AppwriteTrendingRepository implements TrendingRepository {
@@ -33,29 +32,63 @@ public class AppwriteTrendingRepository implements TrendingRepository {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * One row per movie: the row id is derived from the movie id, so Appwrite itself refuses a second
+     * row for the same movie. The {@code searchTerm} column stores the label passed in by the caller
+     * (the movie title) when the row is first created.
+     */
     @Override
     public CountResult increment(String searchTerm, int movieId, String posterUrl) {
         String rowsPath = rowsPath();
-        RowList result = exchange("GET", "find-search-term", rowsPath + "?queries[]=" +
-                encode(query("equal", "searchTerm", List.of(searchTerm))), null, RowList.class);
-        List<Row> rows = result == null || result.rows == null ? List.of() : result.rows;
+        String rowId = rowIdFor(movieId);
+        String rowPath = rowsPath + "/" + rowId;
 
-        // VERIFY: Appwrite documents row reads and updates but no atomic numeric-column increment.
-        // This read-then-write sequence can lose concurrent increments.
-        if (!rows.isEmpty()) {
-            // PATCH changes only the fields sent; PUT would replace the whole row.
-            exchange("PATCH", "increment-search-term", rowsPath + "/" + rows.get(0).id(),
-                    Map.of("data", Map.of("count", rows.get(0).count() + 1)), Void.class);
+        Row existing = findRow(rowPath);
+        if (existing != null) {
+            increase(rowPath, existing);
             return CountResult.INCREMENTED;
         }
 
         validatePosterUrl(posterUrl);
-        exchange("POST", "create-search-term", rowsPath,
-                Map.of("rowId", UUID.randomUUID().toString(),
-                        "data", Map.of("searchTerm", searchTerm, "count", 1,
-                                "movie_id", movieId, "poster_url", posterUrl)),
-                Void.class);
-        return CountResult.NEW;
+        try {
+            exchange("POST", "create-movie-row", rowsPath,
+                    Map.of("rowId", rowId,
+                            "data", Map.of("searchTerm", searchTerm, "count", 1,
+                                    "movie_id", movieId, "poster_url", posterUrl)),
+                    Void.class);
+            return CountResult.NEW;
+        } catch (UpstreamException e) {
+            // 409: another request created the row between our lookup and our create.
+            if (e.status() != 409) throw e;
+        }
+
+        Row created = findRow(rowPath);
+        if (created == null) {
+            throw new IllegalStateException("Appwrite row missing after a create conflict");
+        }
+        increase(rowPath, created);
+        return CountResult.INCREMENTED;
+    }
+
+    private Row findRow(String rowPath) {
+        try {
+            return exchange("GET", "find-movie-row", rowPath, null, Row.class);
+        } catch (UpstreamException e) {
+            if (e.status() == 404) return null;
+            throw e;
+        }
+    }
+
+    private void increase(String rowPath, Row row) {
+        // VERIFY: Appwrite documents row reads and updates but no atomic numeric-column increment.
+        // This read-then-write sequence can lose concurrent increments.
+        // PATCH changes only the fields sent; PUT would replace the whole row.
+        exchange("PATCH", "increment-movie-row", rowPath,
+                Map.of("data", Map.of("count", row.count() + 1)), Void.class);
+    }
+
+    private static String rowIdFor(int movieId) {
+        return "movie-" + movieId;
     }
 
     @Override
@@ -102,9 +135,15 @@ public class AppwriteTrendingRepository implements TrendingRepository {
             return request.headers(this::headers).exchange((req, response) ->
                     readResponse(method, response.getStatusCode(), operation, response, responseType, started));
         } catch (RuntimeException e) {
-            logFailure(operation, method, e, started);
+            // A missing row is the normal "first search for this movie" case, not a failure.
+            if (!isExpectedMissingRow(operation, e)) logFailure(operation, method, e, started);
             throw e;
         }
+    }
+
+    private static boolean isExpectedMissingRow(String operation, RuntimeException error) {
+        return "find-movie-row".equals(operation)
+                && error instanceof UpstreamException upstream && upstream.status() == 404;
     }
 
     private <T> T readResponse(String method, HttpStatusCode status, String operation,
