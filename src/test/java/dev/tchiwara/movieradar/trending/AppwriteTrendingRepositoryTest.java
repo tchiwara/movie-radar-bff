@@ -1,5 +1,6 @@
 package dev.tchiwara.movieradar.trending;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.core.read.ListAppender;
 import dev.tchiwara.movieradar.config.AppProperties;
@@ -23,27 +24,21 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class AppwriteTrendingRepositoryTest {
     private static final AppProperties PROPERTIES = new AppProperties("", "", 60, 10, 0,
             new AppProperties.Appwrite("https://appwrite.test/v1", "project-id", "database-id", "table-id", "api-key"));
+    private static final String ROWS = "https://appwrite.test/v1/tablesdb/database-id/tables/table-id/rows";
 
     @Test
-    void createsRowWithFirstMovieMetadataAndSafeQuotedQuery() throws Exception {
+    void createsRowWithDerivedIdAndFirstMovieMetadata() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         AppwriteTrendingRepository repository = new AppwriteTrendingRepository(builder.build(), PROPERTIES, new ObjectMapper());
 
-        server.expect(requestTo(org.hamcrest.Matchers.allOf(
-                        org.hamcrest.Matchers.containsString("/tablesdb/database-id/tables/table-id/rows"),
-                        org.hamcrest.Matchers.containsString("queries[]="))))
+        server.expect(requestTo(ROWS + "/movie-42"))
                 .andExpect(method(HttpMethod.GET))
-                .andExpect(requestTo(org.hamcrest.Matchers.allOf(
-                        org.hamcrest.Matchers.containsString("method"),
-                        org.hamcrest.Matchers.containsString("attribute"),
-                        org.hamcrest.Matchers.containsString("searchTerm"),
-                        org.hamcrest.Matchers.containsString("values"),
-                        org.hamcrest.Matchers.containsString("a%5C%22b"))))
-                .andRespond(withSuccess("{\"total\":0,\"rows\":[]}", MediaType.APPLICATION_JSON));
-        server.expect(requestTo("https://appwrite.test/v1/tablesdb/database-id/tables/table-id/rows"))
+                .andRespond(withResourceNotFound());
+        server.expect(requestTo(ROWS))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(content().string(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("\"rowId\":\"movie-42\""),
                         org.hamcrest.Matchers.containsString("\"searchTerm\":\"a\\\"b[\""),
                         org.hamcrest.Matchers.containsString("\"movie_id\":42"),
                         org.hamcrest.Matchers.containsString("\"poster_url\":\"https://img.test/poster.jpg\""))))
@@ -55,27 +50,72 @@ class AppwriteTrendingRepositoryTest {
     }
 
     @Test
-    void updatesOnlyTheCount() {
+    void updatesOnlyTheCountOfTheExistingMovieRow() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         AppwriteTrendingRepository repository = new AppwriteTrendingRepository(builder.build(), PROPERTIES, new ObjectMapper());
 
-        server.expect(requestTo(org.hamcrest.Matchers.containsString("/tablesdb/database-id/tables/table-id/rows")))
+        server.expect(requestTo(ROWS + "/movie-9"))
                 .andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess("{\"rows\":[{\"$id\":\"row-1\",\"searchTerm\":\"abc\",\"count\":4,\"movie_id\":9,\"poster_url\":\"https://img.test/old.jpg\"}]}",
+                .andRespond(withSuccess("{\"$id\":\"movie-9\",\"searchTerm\":\"Old Title\",\"count\":4,\"movie_id\":9,\"poster_url\":\"https://img.test/old.jpg\"}",
                         MediaType.APPLICATION_JSON));
-        server.expect(requestTo("https://appwrite.test/v1/tablesdb/database-id/tables/table-id/rows/row-1"))
+        server.expect(requestTo(ROWS + "/movie-9"))
                 // PATCH changes only the fields sent; PUT would replace the whole row.
                 .andExpect(method(HttpMethod.PATCH))
                 .andExpect(content().string("{\"data\":{\"count\":5}}"))
                 .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
 
-        assertEquals(CountResult.INCREMENTED, repository.increment("abc", 99, "https://img.test/new.jpg"));
+        assertEquals(CountResult.INCREMENTED, repository.increment("new label", 9, "https://img.test/new.jpg"));
         server.verify();
     }
 
     @Test
-    void mapsUnauthorizedAndNotFoundStatuses() {
+    void createConflictFallsBackToIncrementingTheRowAnotherRequestCreated() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AppwriteTrendingRepository repository = new AppwriteTrendingRepository(builder.build(), PROPERTIES, new ObjectMapper());
+
+        server.expect(requestTo(ROWS + "/movie-7"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withResourceNotFound());
+        server.expect(requestTo(ROWS))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.CONFLICT).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"type\":\"document_already_exists\",\"message\":\"exists\"}"));
+        server.expect(requestTo(ROWS + "/movie-7"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("{\"$id\":\"movie-7\",\"searchTerm\":\"Seven\",\"count\":1,\"movie_id\":7,\"poster_url\":\"https://img.test/7.jpg\"}",
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo(ROWS + "/movie-7"))
+                .andExpect(method(HttpMethod.PATCH))
+                .andExpect(content().string("{\"data\":{\"count\":2}}"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        assertEquals(CountResult.INCREMENTED, repository.increment("Seven", 7, "https://img.test/7.jpg"));
+        server.verify();
+    }
+
+    @Test
+    void missingRowLookupIsNotLoggedAsAFailure() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AppwriteTrendingRepository repository = new AppwriteTrendingRepository(builder.build(), PROPERTIES, new ObjectMapper());
+        Logger logger = (Logger) LoggerFactory.getLogger(AppwriteTrendingRepository.class);
+        ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        server.expect(requestTo(ROWS + "/movie-3")).andRespond(withResourceNotFound());
+        server.expect(requestTo(ROWS)).andRespond(withStatus(HttpStatus.CREATED)
+                .contentType(MediaType.APPLICATION_JSON).body("{}"));
+        repository.increment("Three", 3, "https://img.test/3.jpg");
+
+        assertTrue(appender.list.stream().noneMatch(event -> event.getLevel() == Level.WARN));
+        logger.detachAppender(appender);
+    }
+
+    @Test
+    void mapsUnauthorizedAndServerErrorStatuses() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         AppwriteTrendingRepository repository = new AppwriteTrendingRepository(builder.build(), PROPERTIES, new ObjectMapper());
@@ -96,10 +136,11 @@ class AppwriteTrendingRepositoryTest {
 
         server.reset();
         server.expect(requestTo(org.hamcrest.Matchers.containsString("/tablesdb/")))
-                .andRespond(withResourceNotFound());
-        UpstreamException notFound = assertThrows(UpstreamException.class,
+                .andRespond(withServerError());
+        UpstreamException serverError = assertThrows(UpstreamException.class,
                 () -> repository.increment("abc", 1, "https://img.test/poster.jpg"));
-        assertEquals("error-status", notFound.failureKind());
+        assertEquals("error-status", serverError.failureKind());
+        assertEquals(500, serverError.status());
     }
 
     @Test
@@ -144,7 +185,7 @@ class AppwriteTrendingRepositoryTest {
         server.expect(requestTo(org.hamcrest.Matchers.containsString("orderDesc")))
                 .andRespond(withStatus(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
                         .body("{\"type\":\"general_query_invalid\",\"message\":\"unsupported query\"}"));
-        server.expect(requestTo("https://appwrite.test/v1/tablesdb/database-id/tables/table-id/rows"))
+        server.expect(requestTo(ROWS))
                 .andRespond(withSuccess("{\"rows\":[{\"$id\":\"1\",\"searchTerm\":\"low\",\"count\":1},{\"$id\":\"2\",\"searchTerm\":\"high\",\"count\":9}]}",
                         MediaType.APPLICATION_JSON));
 
