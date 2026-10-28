@@ -2,12 +2,12 @@
 
 A Spring Boot backend-for-frontend for [Movie Radar](https://movie-radar-beryl.vercel.app), a React/Vite movie search app ([frontend repo](https://github.com/tchiwara/movie-app)). Live API: https://movie-radar-bff.onrender.com (free tier, see [Deployment](#deployment)).
 
-The BFF keeps the TMDB and Appwrite credentials on the server, validates and rate-limits browser requests, caches TMDB responses, maps them to compact DTOs, and records search terms in Appwrite for trending analytics.
+The BFF keeps the TMDB and Appwrite credentials on the server, validates and rate-limits browser requests, caches TMDB responses, maps them to compact DTOs, and records searched movies in Appwrite for trending analytics.
 
 ## Features
 
 - TMDB search and popular-movies proxy with compact DTOs (no raw TMDB payloads)
-- Search-term counting and trending via the Appwrite TablesDB REST API
+- Trending via the Appwrite TablesDB REST API: one row per movie, with a per-client window so repeated searches for the same movie count once
 - Input validation, per-IP rate limiting (Bucket4j), Caffeine caching
 - Explicit CORS allowlist and trusted-proxy-aware client IP resolution
 - Request IDs (`X-Request-Id`), request and upstream logging with credential redaction
@@ -34,7 +34,7 @@ All endpoints are `GET`.
 | `/` | none | Small JSON welcome message. Does not call TMDB or Appwrite, so it is not a health check |
 | `/api/movies` | `query` (required, non-blank, max 100 chars), `page` (default 1, range 1-500) | TMDB search; query is trimmed and lowercased |
 | `/api/movies/popular` | `page` (default 1, range 1-500) | TMDB popular movies |
-| `/api/trending` | none | Up to 5 top search terms from Appwrite |
+| `/api/trending` | none | Up to 5 most-searched movies from Appwrite |
 
 ```bash
 curl "http://localhost:8080/api/movies?query=batman&page=1"
@@ -57,7 +57,7 @@ curl "http://localhost:8080/api/movies?query=batman&page=1"
 }
 ```
 
-`/api/trending` returns `[{ "searchTerm", "count", "movieId", "posterUrl" }]`. `movieId` and `posterUrl` can be `null`.
+`/api/trending` returns `[{ "searchTerm", "count", "movieId", "posterUrl" }]`, where `searchTerm` is the movie title. `movieId` and `posterUrl` can be `null`.
 
 ### Errors
 
@@ -89,6 +89,7 @@ All configuration comes from environment variables. See `.env.example` for the n
 | `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins, no spaces and no trailing slashes |
 | `RATE_LIMIT_PER_MINUTE` | `60` | Requests per minute per client IP |
 | `CACHE_TTL_MINUTES` | `10` | Cache expiry after write |
+| `COUNT_DEDUPE_MINUTES` | `10` | Window in which one client's repeat searches for the same movie count once |
 | `TRUSTED_PROXY_HOPS` | `0` | Trusted proxies in front of the app (see [Client IP](#caching-and-rate-limiting)) |
 | `CONNECT_TIMEOUT_SECONDS` | `5` | Upstream connect timeout |
 | `READ_TIMEOUT_SECONDS` | `10` | Upstream read timeout |
@@ -139,13 +140,13 @@ Deployed as a Docker web service on Render (free instance: 0.1 CPU, 512 MB RAM) 
 ./mvnw test
 ```
 
-27 tests, all passing, using dummy configuration from `src/test/resources`, so no `.env` or real credentials are needed. They cover: application context startup, the root endpoint, controller input validation, global error mapping (400, 404, 405 and 504), TMDB response mapping and timeouts, log redaction, search normalization, non-fatal search-term counting, rate limiting and `X-Forwarded-For` handling, and the Appwrite trending repository (row creation, count increments, error mapping, and the ordered-query fallback). There is no coverage report and no CI yet.
+39 tests, all passing, using dummy configuration from `src/test/resources`, so no `.env` or real credentials are needed. They cover: application context startup, the root endpoint, controller input validation, global error mapping, TMDB response mapping and timeouts, log redaction, search normalization, non-fatal search-term counting, the per-client count window, rate limiting and `X-Forwarded-For` handling, and the Appwrite trending repository (row creation, count increments, race handling, error mapping, and the ordered-query fallback). External services are mocked, and there is no coverage report and no CI yet.
 
 ## Caching and rate limiting
 
 **Cache.** Caffeine, in-memory per instance: `movie-search` (key `query:page`) and `popular-movies` (key `page`), 10 min expiry by default, max 500 entries.
 
-**Search counting.** After the response is ready (cache hit or miss), the first returned movie is recorded in Appwrite. It is skipped when the normalized query is shorter than 3 characters or the result list is empty. Counting failures are logged and never fail the search.
+**Search counting.** After the response is ready (cache hit or miss), the first returned movie is recorded in Appwrite as one row per movie: the row id is derived from the movie id, and the stored name is the movie title. A per-client window (10 minutes by default) skips repeat counts for the same movie from the same client, so typing a title one prefix at a time counts once. Counting is skipped when the normalized query is shorter than 3 characters or the result list is empty. Counting failures are logged and never fail the search.
 
 **Rate limit.** Bucket4j token bucket per client IP on `/api/**`, 60 requests/minute by default with greedy refill. Rejected requests get `429` with `Retry-After: 60`. The root endpoint is not rate limited.
 
@@ -180,12 +181,13 @@ The cached search is slower than a cached popular call because counting still ru
 
 **Limitations:**
 - The free instance sleeps when idle and takes roughly a minute to start. A request that arrives during a cold start can be slow or time out, which the frontend handles by retrying.
-- Cache and rate-limit buckets are per instance, not shared across replicas.
+- Cache, rate-limit buckets and the count window are per instance, not shared across replicas.
 - Concurrent cache misses each call TMDB, because there is no single-flight.
 - Appwrite counting is read-then-write, so concurrent increments can lose updates.
+- One row per movie relies on Appwrite accepting row ids derived from the movie id. It is covered by unit tests with mocked responses and has not been verified end to end against live data.
 - Counting runs synchronously on the request path, adding latency to search, including cache hits.
 - `/api/trending` returns an empty list on most Appwrite failures instead of an error.
-- No authentication on the API, and no health endpoint or metrics.
+
 
 ## Roadmap
 
